@@ -1,0 +1,28 @@
+{
+  "name": "codegraph",
+  "version": "1.0.0",
+  "description": "基于 Tree-sitter 的静态代码调用关系分析工具",
+  "main": "src/index.js",
+  "bin": {
+    "codegraph": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "keywords": [
+    "code-analysis",
+    "ast",
+    "tree-sitter"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "adm-zip": "^0.5.0",
+    "commander": "^12.0.0",
+    "tree-sitter": "^0.21.0",
+    "tree-sitter-java": "^0.23.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
