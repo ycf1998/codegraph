@@ -22,6 +22,8 @@
 - 🔜 TypeScript (扩展中)
 - 🔜 Python (扩展中)
 
+---
+
 ## 2. 架构设计
 
 ### 2.1 设计模式
@@ -77,58 +79,6 @@
 | **Store 工厂** | `storage/index.js` | 根据配置创建存储实例 |
 | **配置中心** | `constants.js` | 存储类型、语言映射、节点类型定义 |
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              codegraph CLI                                  │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  用户命令                                                            │    │
-│  │  index <zip>     callers <symbol>    callees <symbol>               │    │
-│  │  deps <target>   impact <symbol>                                   │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           分层架构                                          │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  CLI 层 (src/cli/index.js)                                           │    │
-│  │  - 命令解析 (Commander)                                              │    │
-│  │  - 参数处理 (--language 等)                                         │    │
-│  │  - 结果输出                                                          │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                      │                                      │
-│                                      ▼                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  语言层 (src/languages/)                                             │    │
-│  │  - 语言配置管理                                                      │    │
-│  │  - 解析器工厂 (createParser)                                         │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                      │                                      │
-│                                      ▼                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  解析层 (src/parser/)                                                │    │
-│  │  - JavaParser.js (Tree-sitter Java)                                 │    │
-│  │  - TsParser.js (Tree-sitter TypeScript) [计划]                       │    │
-│  │  - PyParser.js (Tree-sitter Python) [计划]                           │    │
-│  │  - 提取符号、调用关系、导入关系                                      │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                      │                                      │
-│                                      ▼                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  存储层 (src/storage/json-store.js)                                  │    │
-│  │  - JSON 文件存储                                                      │    │
-│  │  - 查询逻辑（callers, callees, deps, impact）                        │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                      │                                      │
-│                                      ▼                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  工具层                                                              │    │
-│  │  - constants.js (常量定义)                                          │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
 ---
 
 ## 3. 技术选型
@@ -143,30 +93,13 @@
 | **ZIP 处理** | AdmZip | ^0.5.0 | 纯 JS ZIP 库 |
 | **运行时** | Node.js | >=18.0.0 | JavaScript 运行时 |
 
-### 3.2 语言扩展架构
-
-采用**工厂模式**支持多语言：
-
-```
-src/languages/index.js  ← 语言配置和解析器工厂
-    │
-    ├─ java         → parser/JavaParser.js
-    ├─ typescript   → parser/TsParser.js (计划)
-    └─ python       → parser/PyParser.js (计划)
-```
-
-每种语言需要定义：
-1. **文件扩展名** - 用于扫描文件
-2. **AST 节点类型** - 语言特定的节点类型常量
-3. **解析器实现** - 实现 `parse(filePath, content)` 方法
-
-### 3.3 存储方案
+### 3.2 存储方案
 
 | 方案 | 优点 | 缺点 | 选择 |
 |------|------|------|------|
 | **JSON 文件** | 零依赖，简单，跨平台 | 复杂查询性能较弱 | ✅ 当前方案 |
-| **LadybugDB** | 原生图存储、Cypher 查询 | 需要原生模块 | 备选 |
-| **SQLite** | 成熟，支持 SQL | 需要原生模块 | 备选 |
+| **LadybugDB** | 原生图存储、Cypher 查询 | 需要原生模块 | 🔜 备选 |
+| **SQLite** | 成熟，支持 SQL | 需要原生模块 | 🔜 备选 |
 
 **选择 JSON 方案原因：**
 - 零依赖，无需安装数据库
@@ -195,26 +128,17 @@ src/languages/index.js  ← 语言配置和解析器工厂
   ],
   "calls": [
     {
-      "caller": "UserService.getUser",
-      "callee": "UserMapper.getById",
+      "caller": "getUser",
+      "callerClass": "UserService",
+      "callee": "getById",
+      "calleeClass": "UserMapper",
       "file": "UserService.java",
       "line": 12
     }
   ],
-  "references": [
-    {
-      "from": "userMapper",
-      "to": "UserMapper",
-      "file": "UserService.java"
-    }
-  ],
-  "imports": [
-    {
-      "symbol": "UserMapper",
-      "from": "com.example.mapper",
-      "file": "UserService.java"
-    }
-  ]
+  "references": [],
+  "imports": [],
+  "files": []
 }
 ```
 
@@ -230,10 +154,6 @@ src/languages/index.js  ← 语言配置和解析器工厂
        ▼                                       ▼
 ┌──────────────┐                        ┌──────────────┐
 │    File      │                        │    File      │
-└──────────────┘                        └──────────────┘
-
-┌──────────────┐         IMPORTS        ┌──────────────┐
-│    File      │ ─────────────────────> │    File      │
 └──────────────┘                        └──────────────┘
 ```
 
@@ -253,19 +173,18 @@ ZIP 文件
    │
    ▼
 ┌─────────────────┐
-│ 2. 扫描 Java 文件  │
+│ 2. 扫描源文件     │ (根据扩展名自动识别语言)
 └─────────────────┘
    │
    ▼
 ┌─────────────────┐
-│ 3. Tree-sitter   │
-│    AST 解析      │
+│ 3. AST 解析      │ (使用对应语言的 Parser)
 └─────────────────┘
    │
    ▼
 ┌─────────────────┐
 │ 4. 提取符号      │
-│    - 类/接口/枚举 │
+│    - 类/接口     │
 │    - 方法        │
 │    - 字段        │
 └─────────────────┘
@@ -278,13 +197,7 @@ ZIP 文件
    │
    ▼
 ┌─────────────────┐
-│ 6. 提取导入关系  │
-│    - import_declaration │
-└─────────────────┘
-   │
-   ▼
-┌─────────────────┐
-│ 7. 存入 JSON     │
+│ 6. 存入存储      │ (JSON/KuzuDB/SQLite)
 └─────────────────┘
    │
    ▼
@@ -298,27 +211,25 @@ ZIP 文件
    │
    ▼
 ┌─────────────────────────────────────────┐
-│ 1. 加载 index.json                       │
+│ 1. 加载索引                              │
 └─────────────────────────────────────────┘
    │
    ▼
 ┌─────────────────────────────────────────┐
 │ 2. 查找目标符号                          │
-│    filter(s => s.name === 'getUser'     │
-│           && s.class === 'UserService') │
+│    symbolIndex.get("UserService:getUser")│
 └─────────────────────────────────────────┘
    │
    ▼
 ┌─────────────────────────────────────────┐
 │ 3. 查找调用关系                          │
-│    filter(c => c.callee === 'getUser'   │
-│           || c.callee === 'UserService.getUser') │
+│    callerIndex.get("UserService:getUser")│
 └─────────────────────────────────────────┘
    │
    ▼
 ┌─────────────────────────────────────────┐
 │ 4. 关联调用者符号信息                    │
-│    find(s => s.id === c.caller)         │
+│    symbolIndex.get(callerId)            │
 └─────────────────────────────────────────┘
    │
    ▼
@@ -339,20 +250,23 @@ codegraph/
 │   ├── index.js              # CLI 入口
 │   ├── cli/
 │   │   └── index.js          # CLI 命令定义和实现
-│   ├── languages/
-│   │   └── index.js          # 语言配置和解析器工厂
 │   ├── parser/
-│   │   └── JavaParser.js     # Java AST 解析器
+│   │   ├── Parser.js         # 解析器抽象基类
+│   │   ├── JavaParser.js     # Java AST 解析器
+│   │   └── index.js          # 解析器工厂
 │   ├── storage/
-│   │   └── json-store.js     # JSON 存储和查询
-│   └── constants.js          # 常量定义
+│   │   ├── Store.js          # 存储抽象基类
+│   │   ├── json-store.js     # JSON 存储实现
+│   │   └── index.js          # 存储工厂
+│   └── constants.js          # 统一配置中心
 ├── doc/
 │   ├── ARCHITECTURE.md       # 本文件
-│   └── ROADMAP.md            # 开发路线图
+│   ├── ROADMAP.md            # 开发路线图
+│   └── EXTENSION_GUIDE.md    # 扩展开发指南
 ├── test-project/             # 测试项目
 ├── package.json
 ├── README.md                 # 使用说明
-└── MVP_REPORT.md             # MVP 完成报告
+└── .gitignore
 ```
 
 ---
@@ -397,59 +311,42 @@ codegraph/
 |------|------|------|
 | 单文件最大 | 10 MB | 过大会内存溢出 |
 | 内存占用 | ~300MB/10 万行 | AST 遍历需要 |
-| 索引深度 | 5 层 | 防止无限递归 |
+| 索引深度 | -1 (无限) | 使用 visited 集合防止循环 |
 
 ---
 
-## 9. 扩展点
+## 9. 配置说明
 
-### 9.1 添加新语言支持
-
-按照以下步骤添加新语言：
+在 `src/constants.js` 中配置：
 
 ```javascript
-// 1. 创建解析器 src/parser/TsParser.js
-class TsParser {
-  parse(filePath, content) {
-    // 实现解析逻辑
-    return { symbols: [], calls: [], imports: [], references: [] };
-  }
-}
-
-// 2. 注册语言 src/languages/index.js
-const LANGUAGES = {
-  java: { ... },
-  typescript: {
-    name: 'TypeScript',
-    extensions: ['.ts', '.tsx'],
-    parser: require('../parser/TsParser'),
-    nodeTypes: { ... }
+module.exports = {
+  // 存储类型：'json' | 'kuzu' | 'sqlite'
+  STORE_TYPE: 'json',
+  
+  // 默认查询深度：-1 表示无限
+  DEFAULT_DEPTH: -1,
+  
+  // 最大影响分析深度：-1 表示无限
+  DEFAULT_MAX_DEPTH: -1,
+  
+  // 搜索结果限制：-1 表示无限制
+  SEARCH_LIMIT: -1,
+  
+  // 语言配置
+  LANGUAGES: {
+    '.java': {
+      name: 'Java',
+      parserModule: './JavaParser'
+    }
   }
 };
-
-// 3. 安装 tree-sitter 包
-npm install tree-sitter-typescript
-```
-
-### 9.2 添加新命令
-
-```
-1. src/cli/search.js        (语义搜索)
-2. src/cli/graph.js         (生成调用图)
-3. src/cli/cycles.js        (循环依赖检测)
-```
-
-### 9.3 存储升级
-
-```
-1. src/storage/ladybug.js  (LadybugDB，适用于大规模项目)
-2. src/storage/sqlite-store.js (SQLite，备选方案)
 ```
 
 ---
 
 ## 10. 参考资源
 
-- [Tree-sitter 官方文档](https://tree-sitter.github.io/)
-- [GitNexus GitHub](https://github.com/abhigyanpatwari/GitNexus)
+- [Tree-sitter](https://tree-sitter.github.io/)
 - [Commander.js](https://github.com/tj/commander.js)
+- [扩展开发指南](./EXTENSION_GUIDE.md) - 如何添加新语言和存储
