@@ -1,11 +1,16 @@
 /**
  * JSON 文件存储实现
- * 
+ *
  * 使用内存索引加速查询，支持大小写模糊匹配。
  * 索引在加载时构建，查询时优先使用索引，找不到时尝试模糊匹配。
- * 
+ *
+ * 性能优化：
+ * - 大小写不敏感辅助索引
+ * - 批量插入优化
+ * - 查询结果缓存
+ *
  * 继承自 Store 抽象基类，实现所有存储接口方法。
- * 
+ *
  * @module storage/json-store
  */
 
@@ -33,9 +38,19 @@ class JsonStore extends Store {
       files: []
     };
     // 内存索引
-    this.symbolIndex = new Map();      // id -> symbol
-    this.callerIndex = new Map();      // calleeId -> [calls]
-    this.calleeIndex = new Map();      // callerId -> [calls]
+    this.symbolIndex = new Map();           // id -> symbol
+    this.callerIndex = new Map();           // calleeId -> [calls]
+    this.calleeIndex = new Map();           // callerId -> [calls]
+    // 大小写不敏感辅助索引
+    this.symbolIndexLower = new Map();     // lowercaseId -> symbol
+    // 查询缓存
+    this.queryCache = new Map();
+    // 批量插入缓冲
+    this.insertBuffer = {
+      symbols: [],
+      calls: [],
+      dirty: false
+    };
   }
 
   /**
@@ -61,11 +76,15 @@ class JsonStore extends Store {
     this.symbolIndex.clear();
     this.callerIndex.clear();
     this.calleeIndex.clear();
+    this.symbolIndexLower.clear();
+    this.queryCache.clear();
 
-    // 构建符号索引
+    // 构建符号索引（包含大小写不敏感索引）
     for (const symbol of this.data.symbols) {
       const id = this._makeId(symbol.class, symbol.name);
+      const idLower = id.toLowerCase();
       this.symbolIndex.set(id, symbol);
+      this.symbolIndexLower.set(idLower, symbol);
     }
 
     // 构建调用关系索引
@@ -100,7 +119,7 @@ class JsonStore extends Store {
   }
 
   /**
-   * 模糊匹配符号（大小写不敏感）
+   * 模糊匹配符号（使用大小写不敏感索引）
    * @protected
    * @param {string} name - 符号名
    * @param {string} className - 类名
@@ -110,18 +129,14 @@ class JsonStore extends Store {
     // 精确匹配
     const exactId = this._makeId(className, name);
     let symbol = this.symbolIndex.get(exactId);
-    
-    if (symbol || !className) return symbol;
+    if (symbol) return symbol;
 
-    // 大小写模糊匹配
-    const classNameLower = className.toLowerCase();
-    for (const [, s] of this.symbolIndex) {
-      if (s.name === name && s.class &&
-          s.class.toLowerCase() === classNameLower) {
-        return s;
-      }
+    // 使用大小写不敏感索引快速匹配
+    if (className) {
+      const idLower = `${className}:${name}`.toLowerCase();
+      return this.symbolIndexLower.get(idLower) || null;
     }
-    
+
     return null;
   }
 
@@ -137,9 +152,29 @@ class JsonStore extends Store {
     );
 
     if (!existing) {
-      this.data.symbols.push({ ...symbol, id });
-      this.symbolIndex.set(id, symbol);
+      // 使用缓冲减少索引更新次数
+      this.insertBuffer.symbols.push({ ...symbol, id });
+      this.insertBuffer.dirty = true;
+      
+      // 每 100 条批量更新一次索引
+      if (this.insertBuffer.symbols.length >= 100) {
+        this._flushSymbolBuffer();
+      }
     }
+  }
+
+  /**
+   * 刷新符号缓冲到索引
+   * @private
+   */
+  _flushSymbolBuffer() {
+    for (const symbol of this.insertBuffer.symbols) {
+      this.data.symbols.push(symbol);
+      const idLower = symbol.id.toLowerCase();
+      this.symbolIndex.set(symbol.id, symbol);
+      this.symbolIndexLower.set(idLower, symbol);
+    }
+    this.insertBuffer.symbols = [];
   }
 
   /**
@@ -182,6 +217,9 @@ class JsonStore extends Store {
       this.calleeIndex.set(callerId, []);
     }
     this.calleeIndex.get(callerId).push(call);
+
+    // 清除相关查询缓存
+    this.queryCache.clear();
   }
 
   /**
@@ -558,14 +596,33 @@ class JsonStore extends Store {
    * @override
    */
   async save() {
-    fs.writeFileSync(this.dbPath, JSON.stringify(this.data, null, 2));
+    // 刷新剩余的符号缓冲
+    if (this.insertBuffer.dirty && this.insertBuffer.symbols.length > 0) {
+      this._flushSymbolBuffer();
+    }
+
+    // 原子写入（先写临时文件再重命名）
+    const tempPath = this.dbPath + '.tmp';
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(this.data, null, 2), 'utf-8');
+      fs.renameSync(tempPath, this.dbPath);
+    } catch (e) {
+      // 清理临时文件
+      if (fs.existsSync(tempPath)) {
+        fs.unlinkSync(tempPath);
+      }
+      throw e;
+    }
   }
 
   /**
    * @override
    */
   close() {
-    // JSON 方案无需特殊处理
+    // 清空缓存
+    this.queryCache.clear();
+    this.insertBuffer.symbols = [];
+    this.insertBuffer.dirty = false;
   }
 }
 

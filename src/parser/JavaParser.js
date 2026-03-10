@@ -168,10 +168,16 @@ class JavaParser extends BaseParser {
 
   /**
    * 提取方法调用关系
-   * 
+   *
    * 遍历 AST，提取所有方法调用。
    * 调用关系包含调用者、被调用者、调用位置。
-   * 
+   *
+   * 提取的调用类型：
+   * - 普通方法调用：obj.method()
+   * - 静态方法调用：Class.method()
+   * - 对象创建：new Class()
+   * - 构造函数调用：this() / super()
+   *
    * @private
    * @param {TreeNode} node - AST 节点
    * @param {Object} result - 解析结果对象
@@ -188,8 +194,6 @@ class JavaParser extends BaseParser {
       const objectNode = node.childForFieldName('object');
 
       if (nameNode) {
-        // 如果有 receiver（如 userMapper.getById），则 receiver 作为 calleeClass
-        // 否则直接使用 name 作为 callee
         const calleeName = nameNode.text;
         const receiver = objectNode?.text || '';
 
@@ -197,7 +201,38 @@ class JavaParser extends BaseParser {
           caller: context.methodName || '',
           callerClass: context.className || '',
           callee: calleeName,
-          calleeClass: receiver, // 使用 receiver 作为 calleeClass
+          calleeClass: receiver,
+          file: result.file,
+          line: node.startPosition.row + 1
+        });
+      }
+    }
+
+    // 对象创建调用：new ClassName()
+    if (type === 'object_creation_expression') {
+      const typeNode = node.childForFieldName('type');
+      if (typeNode) {
+        const typeName = typeNode.childForFieldName('name')?.text || typeNode.text;
+        result.calls.push({
+          caller: context.methodName || '',
+          callerClass: context.className || '',
+          callee: '<init>',
+          calleeClass: typeName,
+          file: result.file,
+          line: node.startPosition.row + 1
+        });
+      }
+    }
+
+    // 显式构造函数调用：this(...) / super(...)
+    if (type === 'explicit_constructor_invocation') {
+      const nameNode = node.childForFieldName('name');
+      if (nameNode) {
+        result.calls.push({
+          caller: context.methodName || '',
+          callerClass: context.className || '',
+          callee: nameNode.text,
+          calleeClass: context.className || '',
           file: result.file,
           line: node.startPosition.row + 1
         });

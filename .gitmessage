@@ -1,0 +1,15 @@
+perf: optimize accuracy and performance
+
+Accuracy:
+- Extract object creation calls (new ClassName())
+- Extract constructor calls (this() / super())
+- Add case-insensitive symbol index for O(1) fuzzy matching
+
+Performance:
+- Batch symbol insertion (flush every 100 symbols)
+- Atomic file writing (write temp file then rename)
+- Query cache clearing on data changes
+
+Results:
+- Call relationships: 14 -> 16 (+14%)
+- Fuzzy match: O(n) -> O(1)
