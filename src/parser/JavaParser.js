@@ -1,14 +1,21 @@
 /**
  * Java AST 解析器
- * 
+ *
  * 使用 Tree-sitter 解析 Java 源代码，提取：
  * - 符号定义（类、方法、字段）
  * - 方法调用关系
  * - 导入关系
  * - 类型引用关系
- * 
+ * - 字段类型映射
+ *
+ * 准确度优化：
+ * - 字段类型追踪（支持依赖注入）
+ * - 链式调用提取
+ * - 返回类型推断
+ * - 继承/实现关系提取
+ *
  * 继承自 Parser 抽象基类。
- * 
+ *
  * @module parser/JavaParser
  */
 
@@ -31,6 +38,8 @@ class JavaParser extends BaseParser {
     super();
     this.parser = new Parser();
     this.parser.setLanguage(Java);
+    // 字段类型映射：fieldName -> { typeName, className }
+    this.fieldTypes = new Map();
   }
 
   /**
@@ -41,27 +50,144 @@ class JavaParser extends BaseParser {
    */
   parse(filePath, content) {
     const tree = this.parser.parse(content);
+    
+    // 重置字段类型映射
+    this.fieldTypes.clear();
 
     const result = {
       file: filePath,
       symbols: [],
       calls: [],
       imports: [],
-      references: []
+      references: [],
+      fieldTypes: {}  // 新增：字段类型映射
     };
 
+    // 第一遍：提取符号和字段类型
     this._extractSymbols(tree.rootNode, result);
-    this._extractCalls(tree.rootNode, result);
+    
+    // 第二遍：提取调用关系（使用字段类型映射）
+    this._extractCallsTree(tree.rootNode, result);
+    
+    // 提取导入关系
     this._extractImports(tree.rootNode, result);
+    
+    // 提取继承/实现关系
+    this._extractInheritance(tree.rootNode, result);
+
+    // 添加字段类型映射到结果
+    result.fieldTypes = Object.fromEntries(this.fieldTypes);
 
     return result;
   }
 
   /**
+   * 第二遍遍历：提取调用关系
+   * @private
+   */
+  _extractCallsTree(node, result, context = {}) {
+    const type = node.type;
+
+    // 类/接口/枚举定义 - 传递 className
+    if (this._isTypeDeclaration(type)) {
+      const nameNode = node.childForFieldName('name');
+      if (nameNode) {
+        const bodyNode = node.childForFieldName('body');
+        if (bodyNode) {
+          this._extractCallsTree(bodyNode, result, { className: nameNode.text });
+        }
+      }
+      return;
+    }
+
+    // 方法定义 - 传递 methodName 和 className
+    if (type === JAVA_NODE_TYPES.METHOD_DECLARATION) {
+      const nameNode = node.childForFieldName('name');
+      if (nameNode) {
+        const bodyNode = node.childForFieldName('body');
+        if (bodyNode) {
+          this._extractCallsTree(bodyNode, result, {
+            methodName: nameNode.text,
+            className: context.className
+          });
+        }
+      }
+      return;
+    }
+
+    // 方法调用
+    if (type === JAVA_NODE_TYPES.METHOD_INVOCATION) {
+      const nameNode = node.childForFieldName('name');
+      const objectNode = node.childForFieldName('object');
+
+      if (nameNode) {
+        const calleeName = nameNode.text;
+        let receiver = objectNode?.text || '';
+        let calleeClass = receiver;
+
+        // 准确度优化：如果 receiver 是字段，使用字段类型
+        if (receiver && context.className) {
+          const fieldKey = `${context.className}.${receiver}`;
+          const fieldType = this.fieldTypes.get(fieldKey);
+          if (fieldType) {
+            calleeClass = fieldType.typeName;
+          }
+        }
+
+        result.calls.push({
+          caller: context.methodName || '',
+          callerClass: context.className || '',
+          callee: calleeName,
+          calleeClass: calleeClass,
+          file: result.file,
+          line: node.startPosition.row + 1
+        });
+      }
+    }
+
+    // 对象创建调用：new ClassName()
+    if (type === 'object_creation_expression') {
+      const typeNode = node.childForFieldName('type');
+      if (typeNode) {
+        const typeName = typeNode.childForFieldName('name')?.text || typeNode.text;
+        result.calls.push({
+          caller: context.methodName || '',
+          callerClass: context.className || '',
+          callee: '<init>',
+          calleeClass: typeName,
+          file: result.file,
+          line: node.startPosition.row + 1
+        });
+      }
+    }
+
+    // 显式构造函数调用：this(...) / super(...)
+    if (type === 'explicit_constructor_invocation') {
+      const nameNode = node.childForFieldName('name');
+      if (nameNode) {
+        result.calls.push({
+          caller: context.methodName || '',
+          callerClass: context.className || '',
+          callee: nameNode.text,
+          calleeClass: context.className || '',
+          file: result.file,
+          line: node.startPosition.row + 1
+        });
+      }
+    }
+
+    // 递归处理所有子节点
+    for (const child of node.children) {
+      this._extractCallsTree(child, result, context);
+    }
+  }
+
+  /**
    * 提取符号定义
-   * 
+   *
    * 递归遍历 AST，提取类、方法、字段定义。
-   * 
+   * 同时收集字段类型映射用于后续调用分析。
+   *
    * @private
    * @param {TreeNode} node - AST 节点
    * @param {Object} result - 解析结果对象
@@ -114,25 +240,26 @@ class JavaParser extends BaseParser {
           signature: signature
         };
         result.symbols.push(symbol);
-
-        // 处理方法体中的调用
-        const bodyNode = node.childForFieldName('body');
-        if (bodyNode) {
-          this._extractCalls(bodyNode, result, {
-            methodName: symbol.name,
-            className: context.className
-          });
-        }
       }
-      return; // 处理完方法后返回
+      return; // 处理完方法后返回，调用关系会在第二遍提取
     }
 
-    // 字段定义
+    // 字段定义 - 重要：收集字段类型用于依赖注入分析
     if (type === JAVA_NODE_TYPES.FIELD_DECLARATION) {
       for (const child of node.children) {
         if (child.type === JAVA_NODE_TYPES.VARIABLE_DECLARATOR) {
           const nameNode = child.childForFieldName('name');
-          const typeNode = child.childForFieldName('type');
+          
+          // 获取类型节点：查找 type_identifier 子节点
+          let typeName = '';
+          for (const c of node.children) {
+            if (c.type === 'type_identifier' || c.type === 'generic_type') {
+              const typeNode = c.childForFieldName('name') || c;
+              typeName = typeNode.text;
+              break;
+            }
+          }
+          
           if (nameNode) {
             const symbol = {
               name: nameNode.text,
@@ -140,16 +267,25 @@ class JavaParser extends BaseParser {
               file: result.file,
               line: child.startPosition.row + 1,
               class: context.className || '',
-              returnType: typeNode?.text || '',
+              returnType: typeName,
               signature: ''
             };
             result.symbols.push(symbol);
 
+            // 记录字段类型映射（用于依赖注入）
+            if (context.className && typeName) {
+              const fieldKey = `${context.className}.${nameNode.text}`;
+              this.fieldTypes.set(fieldKey, {
+                typeName: typeName,
+                className: context.className
+              });
+            }
+
             // 记录字段类型引用
-            if (typeNode && typeNode.type === JAVA_NODE_TYPES.TYPE_IDENTIFIER) {
+            if (typeName) {
               result.references.push({
                 from: nameNode.text,
-                to: typeNode.text,
+                to: typeName,
                 type: 'references',
                 file: result.file
               });
@@ -167,81 +303,72 @@ class JavaParser extends BaseParser {
   }
 
   /**
-   * 提取方法调用关系
-   *
-   * 遍历 AST，提取所有方法调用。
-   * 调用关系包含调用者、被调用者、调用位置。
-   *
-   * 提取的调用类型：
-   * - 普通方法调用：obj.method()
-   * - 静态方法调用：Class.method()
-   * - 对象创建：new Class()
-   * - 构造函数调用：this() / super()
+   * 提取继承/实现关系
    *
    * @private
    * @param {TreeNode} node - AST 节点
    * @param {Object} result - 解析结果对象
-   * @param {Object} context - 上下文信息
-   * @param {string} context.methodName - 当前方法名
-   * @param {string} context.className - 当前类名
    */
-  _extractCalls(node, result, context = {}) {
+  _extractInheritance(node, result) {
     const type = node.type;
 
-    // 方法调用
-    if (type === JAVA_NODE_TYPES.METHOD_INVOCATION) {
+    // 类继承：extends
+    if (type === JAVA_NODE_TYPES.CLASS_DECLARATION) {
       const nameNode = node.childForFieldName('name');
-      const objectNode = node.childForFieldName('object');
-
-      if (nameNode) {
-        const calleeName = nameNode.text;
-        const receiver = objectNode?.text || '';
-
-        result.calls.push({
-          caller: context.methodName || '',
-          callerClass: context.className || '',
-          callee: calleeName,
-          calleeClass: receiver,
-          file: result.file,
-          line: node.startPosition.row + 1
+      const superClassNode = node.childForFieldName('superclass');
+      
+      if (nameNode && superClassNode) {
+        const superClass = superClassNode.childForFieldName('name')?.text || superClassNode.text;
+        result.references.push({
+          from: nameNode.text,
+          to: superClass,
+          type: 'extends',
+          file: result.file
         });
       }
     }
 
-    // 对象创建调用：new ClassName()
-    if (type === 'object_creation_expression') {
-      const typeNode = node.childForFieldName('type');
-      if (typeNode) {
-        const typeName = typeNode.childForFieldName('name')?.text || typeNode.text;
-        result.calls.push({
-          caller: context.methodName || '',
-          callerClass: context.className || '',
-          callee: '<init>',
-          calleeClass: typeName,
-          file: result.file,
-          line: node.startPosition.row + 1
-        });
+    // 接口实现：implements
+    if (type === JAVA_NODE_TYPES.CLASS_DECLARATION || type === JAVA_NODE_TYPES.ENUM_DECLARATION) {
+      const nameNode = node.childForFieldName('name');
+      const interfacesNode = node.childForFieldName('interfaces');
+      
+      if (nameNode && interfacesNode) {
+        for (const child of interfacesNode.children) {
+          if (child.type === 'type_identifier') {
+            result.references.push({
+              from: nameNode.text,
+              to: child.text,
+              type: 'implements',
+              file: result.file
+            });
+          }
+        }
       }
     }
 
-    // 显式构造函数调用：this(...) / super(...)
-    if (type === 'explicit_constructor_invocation') {
+    // 接口继承：extends
+    if (type === JAVA_NODE_TYPES.INTERFACE_DECLARATION) {
       const nameNode = node.childForFieldName('name');
-      if (nameNode) {
-        result.calls.push({
-          caller: context.methodName || '',
-          callerClass: context.className || '',
-          callee: nameNode.text,
-          calleeClass: context.className || '',
-          file: result.file,
-          line: node.startPosition.row + 1
-        });
+      const interfacesNode = node.childForFieldName('interfaces');
+      
+      if (nameNode && interfacesNode) {
+        for (const child of interfacesNode.children) {
+          if (child.type === 'type_identifier') {
+            result.references.push({
+              from: nameNode.text,
+              to: child.text,
+              type: 'extends',
+              file: result.file
+            });
+          }
+        }
       }
     }
 
     // 递归处理所有子节点
     for (const child of node.children) {
-      this._extractCalls(child, result, context);
+      this._extractInheritance(child, result);
     }
   }
 

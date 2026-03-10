@@ -189,9 +189,17 @@ command
             }
           }
 
-          // 插入引用关系
+          // 插入引用关系（包括 extends/implements）
           for (const ref of result.references) {
             await store.insertReference(ref.from, ref.to, ref.file);
+          }
+
+          // 插入字段类型映射（用于依赖注入分析）
+          if (result.fieldTypes) {
+            for (const [fieldKey, fieldType] of Object.entries(result.fieldTypes)) {
+              // 将字段类型作为特殊引用存储
+              await store.insertReference(fieldKey, fieldType.typeName, result.file);
+            }
           }
 
           fileCount++;
